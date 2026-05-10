@@ -1,63 +1,94 @@
-import asyncio
-import websockets
-import json
 import requests
+import time
 import os
 from datetime import datetime
 
+# ================== CONFIG ==================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-API_KEY = os.getenv("SEC_API_KEY")
-TARGET_CIK = "0001181412"
-TARGET_FORM = "S-1"
+CIK = "0001181412"          # SpaceX
+COMPANY_NAME = "SpaceX"
+CHECK_INTERVAL = 45         # seconds
+# ===========================================
+
+last_seen = None
+
+headers = {
+    "User-Agent": "SpaceX Bot (your.email@example.com)"   # SEC requires this
+}
 
 def send_discord_alert(filing):
-    company = filing.get("companyName", "SpaceX")
-    form = filing.get("formType", "Unknown")
-    filed_at = filing.get("filedAt", datetime.utcnow().isoformat())
-    accession = filing.get("accessionNo", "")
-    cik = filing.get("cik", TARGET_CIK)
-
-    link = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/{accession.replace('-','')}/{filing.get('primaryDocument', 'index.htm')}"
-
+    form = filing.get('form', 'Unknown')
+    filed_date = filing.get('filingDate', 'Unknown')
+    accession = filing.get('accessionNumber', '')
+    
+    link = f"https://www.sec.gov/Archives/edgar/data/{CIK.lstrip('0')}/{accession.replace('-','')}/{filing.get('primaryDocument', 'index.htm')}"
+    
     embed = {
-        "title": f"🚨 INSTANT SpaceX S-1 ALERT!",
-        "description": f"**{company}** just filed a {form}",
+        "title": f"🚨 SpaceX Filing Detected!",
+        "description": f"**{COMPANY_NAME}** just filed a **{form}**",
         "url": link,
         "color": 0x00ff00,
         "timestamp": datetime.utcnow().isoformat(),
         "fields": [
             {"name": "Form", "value": form, "inline": True},
-            {"name": "Filed At", "value": filed_at[:19] + " UTC", "inline": True},
+            {"name": "Filed At", "value": filed_date, "inline": True},
             {"name": "Accession", "value": accession, "inline": False}
         ]
     }
     try:
         requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]})
-    except:
-        pass
+        print(f"✅ Alert sent for {form}")
+    except Exception as e:
+        print("Failed to send Discord alert:", e)
 
-async def connect_with_retry():
-    while True:
-        try:
-            url = f"wss://stream.sec-api.io?apiKey={API_KEY}"
-            print("🔌 Connecting to real-time SEC stream...")
+def check_filings():
+    global last_seen
+    url = f"https://data.sec.gov/submissions/CIK{CIK}.json"
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        recent = data.get('filings', {}).get('recent', {})
+        if not recent:
+            print("No recent filings data")
+            return
             
-            async with websockets.connect(url, ping_interval=25, ping_timeout=30) as ws:
-                print("✅ Connected! Watching for SpaceX S-1 filings (instant)")
+        # Check the newest filings
+        for i in range(min(5, len(recent.get('accessionNumber', [])))):
+            acc_no = recent['accessionNumber'][i]
+            
+            if last_seen is None:
+                last_seen = acc_no
+                print("Initialized last_seen")
+                return
                 
-                async for message in ws:
-                    try:
-                        data = json.loads(message)
-                        if data.get("cik") == TARGET_CIK and data.get("formType") == TARGET_FORM:
-                            print("🎯 SPACE X S-1 DETECTED!")
-                            send_discord_alert(data)
-                    except:
-                        pass
-                        
-        except Exception as e:
-            print(f"⚠️ Connection lost: {type(e).__name__} - {e}")
-            print("🔄 Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
+            if acc_no == last_seen:
+                break
+                
+            # New filing found
+            filing = {
+                'accessionNumber': acc_no,
+                'filingDate': recent['filingDate'][i],
+                'form': recent['form'][i],
+                'primaryDocument': recent['primaryDocument'][i]
+            }
+            
+            print(f"🆕 New filing detected: {filing['form']} - {filing['filingDate']}")
+            send_discord_alert(filing)
+            
+            # Update to the newest one
+            last_seen = recent['accessionNumber'][0]
+            break
+            
+    except Exception as e:
+        print(f"Error checking filings: {e}")
 
-if __name__ == "__main__":
-    asyncio.run(connect_with_retry())
+# ================== MAIN LOOP ==================
+print("🚀 Free SpaceX Polling Bot Started - Checking every 45 seconds")
+print("Monitoring for new filings (including S-1)")
+
+while True:
+    check_filings()
+    time.sleep(CHECK_INTERVAL)
