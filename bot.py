@@ -5,29 +5,28 @@ from datetime import datetime
 
 # ================== CONFIG ==================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-CIK = "0001181412"          # SpaceX
+CIK = "0001181412"
 COMPANY_NAME = "SpaceX"
-CHECK_INTERVAL = 45         # seconds
+CHECK_INTERVAL = 45
 # ===========================================
 
 last_seen = None
+headers = {"User-Agent": "SpaceX Bot (your.email@example.com)"}
 
-headers = {
-    "User-Agent": "SpaceX Bot (your.email@example.com)"   # SEC requires this
-}
-
-def send_discord_alert(filing):
+def send_discord_alert(filing, is_test=False):
     form = filing.get('form', 'Unknown')
     filed_date = filing.get('filingDate', 'Unknown')
     accession = filing.get('accessionNumber', '')
     
     link = f"https://www.sec.gov/Archives/edgar/data/{CIK.lstrip('0')}/{accession.replace('-','')}/{filing.get('primaryDocument', 'index.htm')}"
     
+    title = "🧪 TEST ALERT - Bot is Working!" if is_test else "🚨 SpaceX Filing Detected!"
+    
     embed = {
-        "title": f"🚨 SpaceX Filing Detected!",
+        "title": title,
         "description": f"**{COMPANY_NAME}** just filed a **{form}**",
         "url": link,
-        "color": 0x00ff00,
+        "color": 0x00ff00 if not is_test else 0xFFFF00,
         "timestamp": datetime.utcnow().isoformat(),
         "fields": [
             {"name": "Form", "value": form, "inline": True},
@@ -37,7 +36,7 @@ def send_discord_alert(filing):
     }
     try:
         requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]})
-        print(f"✅ Alert sent for {form}")
+        print(f"✅ {'Test' if is_test else 'Real'} alert sent for {form}")
     except Exception as e:
         print("Failed to send Discord alert:", e)
 
@@ -52,22 +51,18 @@ def check_filings():
         
         recent = data.get('filings', {}).get('recent', {})
         if not recent:
-            print("No recent filings data")
             return
             
-        # Check the newest filings
         for i in range(min(5, len(recent.get('accessionNumber', [])))):
             acc_no = recent['accessionNumber'][i]
             
             if last_seen is None:
                 last_seen = acc_no
-                print("Initialized last_seen")
                 return
                 
             if acc_no == last_seen:
                 break
                 
-            # New filing found
             filing = {
                 'accessionNumber': acc_no,
                 'filingDate': recent['filingDate'][i],
@@ -75,19 +70,27 @@ def check_filings():
                 'primaryDocument': recent['primaryDocument'][i]
             }
             
-            print(f"🆕 New filing detected: {filing['form']} - {filing['filingDate']}")
+            print(f"🆕 New filing: {filing['form']}")
             send_discord_alert(filing)
-            
-            # Update to the newest one
             last_seen = recent['accessionNumber'][0]
             break
             
     except Exception as e:
         print(f"Error checking filings: {e}")
 
-# ================== MAIN LOOP ==================
-print("🚀 Free SpaceX Polling Bot Started - Checking every 45 seconds")
-print("Monitoring for new filings (including S-1)")
+# ================== MAIN ==================
+print("🚀 Free SpaceX Polling Bot Started")
+print("Type 'TEST' in the next redeploy to trigger a test alert")
+
+# Send test alert on startup (you control it by redeploying)
+send_discord_alert({
+    'form': 'TEST-S1',
+    'filingDate': datetime.utcnow().strftime('%Y-%m-%d'),
+    'accessionNumber': 'TEST-FILING-123456789',
+    'primaryDocument': 'index.htm'
+}, is_test=True)
+
+print("Monitoring for real filings every 45 seconds...")
 
 while True:
     check_filings()
